@@ -1,5 +1,2 @@
-weights/*.pkl
-weights/*.bin
-weights/*.pth
-weights/*.tar
+weights
 __pycache__/
