@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Medusa Gaze Live</title>
+  <style>
+    body {
+      margin: 0;
+      background: #111;
+      color: #eee;
+      font-family: sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+    }
+    #video, #canvas {
+      display: none;
+    }
+    #view {
+      border: 2px solid #444;
+      box-shadow: 0 0 10px #000;
+    }
+    #info {
+      margin-top: 10px;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <h2>Medusa Gaze Live Demo</h2>
+
+  <video id="video" autoplay playsinline></video>
+  <canvas id="view"></canvas>
+  <canvas id="canvas"></canvas>
+
+  <div id="info">Initializing...</div>
+
+  <script>
+    const video = document.getElementById("video");
+    const viewCanvas = document.getElementById("view");
+    const viewCtx = viewCanvas.getContext("2d");
+    const sendCanvas = document.getElementById("canvas");
+    const sendCtx = sendCanvas.getContext("2d");
+    const info = document.getElementById("info");
+
+    const BACKEND_URL = "http://localhost:8000/predict";
+    const TARGET_INTERVAL = 50;
+
+    let running = true;
+    let lastFpsTime = performance.now();
+    let frameCount = 0;
+    let latestBox = null;
+    let latestGaze = null;
+
+    async function initCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false
+        });
+        video.srcObject = stream;
+
+        await new Promise((resolve) => {
+          video.onloadedmetadata = () => resolve();
+        });
+
+        const width = video.videoWidth || 640;
+        const height = video.videoHeight || 480;
+
+        viewCanvas.width = width;
+        viewCanvas.height = height;
+        sendCanvas.width = width;
+        sendCanvas.height = height;
+
+        info.textContent = "Camera initialized. Streaming...";
+        loop();
+        sendFrameLoop();
+      } catch (err) {
+        console.error(err);
+        info.textContent = "Failed to access camera: " + err.message;
+      }
+    }
+
+    function drawFaceBox(box) {
+      if (!box) return;
+      const [x1, y1, x2, y2] = box;
+      viewCtx.strokeStyle = "red";
+      viewCtx.lineWidth = 2;
+      viewCtx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+    }
+
+    function drawGaze(gaze, box) {
+      if (!gaze) return;
+      const g = Array.isArray(gaze[0]) ? gaze[0] : gaze; // flatten [[x,y]] to [x,y] if needed
+      if (!Array.isArray(g) || g.length < 2) return;
+      const [gx, gy] = g;
+      const [x1, y1, x2, y2] = box;
+      const cx = x1 + (x2 - x1) / 2;
+      const cy = y1 + (y2 - y1) / 2;
+
+      const faceSize = Math.min(x2 - x1, y2 - y1);
+      const scale = faceSize * 2; // vector length relative to face size
+      const dx = gx * scale;
+      const dy = gy * scale;
+
+      // main vector
+      viewCtx.strokeStyle = "#00e676";
+      viewCtx.lineWidth = 3;
+      viewCtx.beginPath();
+      viewCtx.moveTo(cx, cy);
+      viewCtx.lineTo(cx + dx, cy + dy);
+      viewCtx.stroke();
+
+      // arrowhead
+      const angle = Math.atan2(dy, dx);
+      const headLen = Math.max(8, faceSize * 0.06);
+      viewCtx.beginPath();
+      viewCtx.moveTo(cx + dx, cy + dy);
+      viewCtx.lineTo(
+        cx + dx - headLen * Math.cos(angle - Math.PI / 6),
+        cy + dy - headLen * Math.sin(angle - Math.PI / 6)
+      );
+      viewCtx.moveTo(cx + dx, cy + dy);
+      viewCtx.lineTo(
+        cx + dx - headLen * Math.cos(angle + Math.PI / 6),
+        cy + dy - headLen * Math.sin(angle + Math.PI / 6)
+      );
+      viewCtx.stroke();
+    }
+
+    function updateFps() {
+      frameCount++;
+      const now = performance.now();
+      if (now - lastFpsTime >= 1000) {
+        const fps = (frameCount * 1000) / (now - lastFpsTime);
+        info.textContent = `Streaming... ~${fps.toFixed(1)} fps`;
+        frameCount = 0;
+        lastFpsTime = now;
+      }
+    }
+
+    function loop() {
+      if (!running) return;
+      const start = performance.now();
+
+      viewCtx.drawImage(video, 0, 0, viewCanvas.width, viewCanvas.height);
+
+      if (latestBox) {
+        drawFaceBox(latestBox);
+      }
+
+      if (latestGaze && latestBox) {
+        drawGaze(latestGaze, latestBox);
+      }
+
+      updateFps();
+
+      const elapsed = performance.now() - start;
+      const delay = Math.max(0, TARGET_INTERVAL - elapsed);
+      setTimeout(() => {
+        requestAnimationFrame(loop);
+      }, delay);
+    }
+
+    function sendFrameLoop() {
+      if (!running) return;
+      const start = performance.now();
+
+      sendCtx.drawImage(video, 0, 0, sendCanvas.width, sendCanvas.height);
+
+      sendCanvas.toBlob(async (blob) => {
+        if (!blob) {
+          setTimeout(sendFrameLoop, TARGET_INTERVAL);
+          return;
+        }
+
+        const formData = new FormData();
+        formData.append("frame", blob, "frame.png");
+
+        try {
+          const resp = await fetch(BACKEND_URL, {
+            method: "POST",
+            body: formData
+          });
+          const data = await resp.json();
+          if (data.face_found && data.face_bbox) {
+            latestBox = data.face_bbox;
+            const g = Array.isArray(data.gaze) && Array.isArray(data.gaze[0]) ? data.gaze[0] : data.gaze;
+            latestGaze = g;
+          } else {
+            latestBox = null;
+            latestGaze = null;
+          }
+        } catch (err) {
+          console.error("Request error:", err);
+        }
+
+        const elapsed = performance.now() - start;
+        const delay = Math.max(0, TARGET_INTERVAL - elapsed);
+        setTimeout(sendFrameLoop, delay);
+      }, "image/png");
+    }
+
+    initCamera();
+  </script>
+</body>
+</html>

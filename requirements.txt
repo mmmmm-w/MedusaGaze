@@ -15,3 +15,6 @@ timm==1.0.15
 torch
 torchvision
 tqdm==4.66.2
+fastapi
+uvicorn
+python-multipart
