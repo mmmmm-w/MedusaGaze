@@ -9,6 +9,20 @@ conda activate medusa
 pip install -r requirements.txt
 bash download.sh
 ```
+### data collection
+To collect data for finetuning/calibration, run
+
+```sh
+python data_collection/data_collection.py
+```
+
+### interface
+To run web interface demo, first run
+
+```sh
+python server.py
+```
+Then open index.html with your browser.
 
 This repo is adapted from openface 3.0. OpenFace is a comprehensive toolkit for facial feature extraction, supporting face landmark detection, action unit detection, emotion recognition, and gaze estimation.
 
