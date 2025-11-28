@@ -18,4 +18,3 @@ tqdm==4.66.2
 fastapi
 uvicorn
 python-multipart
-tkinter

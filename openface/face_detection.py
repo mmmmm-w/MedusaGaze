@@ -46,9 +46,26 @@ class FaceDetector:
         img = torch.from_numpy(img).unsqueeze(0).to(self.device)
         return img, img_raw
 
+    def preprocess_image_array(self, img_raw: np.ndarray, resize: float = 1.0):
+        """Same as preprocess_image but takes an already-loaded BGR array."""
+        img = np.float32(img_raw)
+        if resize != 1:
+            img = cv2.resize(img, None, fx=resize, fy=resize, interpolation=cv2.INTER_LINEAR)
+        img -= (104, 117, 123)
+        img = img.transpose(2, 0, 1)
+        img = torch.from_numpy(img).unsqueeze(0).to(self.device)
+        return img, img_raw
+
     def detect_faces(self, image_path: str, resize: float = 1.0):
         img, img_raw = self.preprocess_image(image_path, resize)
-        
+        return self._detect_common(img, img_raw, resize)
+
+    def detect_faces_image(self, img_raw: np.ndarray, resize: float = 1.0):
+        """Detect faces directly from an in-memory BGR image."""
+        img, img_raw = self.preprocess_image_array(img_raw, resize)
+        return self._detect_common(img, img_raw, resize)
+
+    def _detect_common(self, img: torch.Tensor, img_raw: np.ndarray, resize: float = 1.0):
         with torch.no_grad():
             loc, conf, landms = self.model(img)
         
@@ -91,7 +108,40 @@ class FaceDetector:
         confidence = det[4]
         if confidence < self.vis_threshold:
             return None, None
-        
+
         bbox = det[:4].astype(int)
-        face = img_raw[bbox[1]:bbox[3], bbox[0]:bbox[2]]
+        h, w = img_raw.shape[:2]
+        x1 = max(0, min(w - 1, bbox[0]))
+        y1 = max(0, min(h - 1, bbox[1]))
+        x2 = max(0, min(w, bbox[2]))
+        y2 = max(0, min(h, bbox[3]))
+        if x2 <= x1 or y2 <= y1:
+            return None, None
+
+        face = img_raw[y1:y2, x1:x2]
+        dets[0, :4] = np.array([x1, y1, x2, y2], dtype=np.float32)
+        return face, dets
+
+    def get_face_from_image(self, img_raw: np.ndarray, resize: float = 1.0):
+        """Get face crop and detections directly from an in-memory BGR image."""
+        dets, img_proc = self.detect_faces_image(img_raw, resize)
+        if dets is None or len(dets) == 0:
+            return None, None
+
+        det = dets[0]
+        confidence = det[4]
+        if confidence < self.vis_threshold:
+            return None, None
+
+        bbox = det[:4].astype(int)
+        h, w = img_proc.shape[:2]
+        x1 = max(0, min(w - 1, bbox[0]))
+        y1 = max(0, min(h - 1, bbox[1]))
+        x2 = max(0, min(w, bbox[2]))
+        y2 = max(0, min(h, bbox[3]))
+        if x2 <= x1 or y2 <= y1:
+            return None, None
+
+        face = img_proc[y1:y2, x1:x2]
+        dets[0, :4] = np.array([x1, y1, x2, y2], dtype=np.float32)
         return face, dets

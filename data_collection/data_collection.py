@@ -49,19 +49,16 @@ os.makedirs(IMG_DIR, exist_ok=True)
 # Calibration points
 # ==============================
 
-def make_grid_points(cols=5, rows=3, margin_ratio=0.12):
-    """Make a grid of screen points, avoiding edges a bit."""
+def make_random_points(num_points=15, margin_ratio=0.02):
+    """Sample random points across the screen with a margin from edges."""
     x_margin = int(SCREEN_W * margin_ratio)
     y_margin = int(SCREEN_H * margin_ratio)
+    xs = np.random.randint(x_margin, SCREEN_W - x_margin, size=num_points)
+    ys = np.random.randint(y_margin, SCREEN_H - y_margin, size=num_points)
+    return list(zip(xs.tolist(), ys.tolist()))
 
-    xs = np.linspace(x_margin, SCREEN_W - x_margin, cols).astype(int)
-    ys = np.linspace(y_margin, SCREEN_H - y_margin, rows).astype(int)
-
-    points = [(int(x), int(y)) for y in ys for x in xs]
-    np.random.shuffle(points)
-    return points
-
-target_points = make_grid_points(cols=5, rows=3, margin_ratio=0.12)
+# Random positions each run
+target_points = make_random_points(num_points=15, margin_ratio=0.12)
 
 # ==============================
 # Helper drawing functions
