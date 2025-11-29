@@ -1,5 +1,11 @@
 import os
+import sys
 import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(ROOT / "src"))
 
 import cv2
 import numpy as np
@@ -9,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from openface.face_detection import FaceDetector
 from openface.multitask_model import MultitaskPredictor
+from openface.view_model import ViewPredictor
 
 device = (
     "mps"
@@ -19,9 +26,15 @@ device = (
 
 face_model_path = "./weights/Alignment_RetinaFace.pth"
 mtl_model_path = "./weights/MTL_backbone.pth"
+view_model_path = "./weights/view_mtl.pth"
 
 face_detector = FaceDetector(model_path=face_model_path, device=device)
 multitask_model = MultitaskPredictor(model_path=mtl_model_path, device=device)
+view_model = None
+if os.path.exists(view_model_path):
+    view_model = ViewPredictor(model_path=view_model_path, device=device)
+else:
+    print("Warning: view model weights not found at ./weights/view_mtl.pth; view_point will be omitted.")
 
 app = FastAPI()
 
@@ -60,18 +73,33 @@ async def predict(frame: UploadFile = File(...)):
 
     det = dets[0]
     x1, y1, x2, y2 = map(float, det[:4])
+    h, w = img.shape[:2]
+    cx = (x1 + x2) * 0.5 / w
+    cy = (y1 + y2) * 0.5 / h
+    bw = (x2 - x1) / w
+    bh = (y2 - y1) / h
+    bbox_feat = [cx, cy, bw, bh]
 
     emotion_logits, gaze_output, au_output = multitask_model.predict(cropped_face)
 
     def to_list(x):
         return x.tolist() if hasattr(x, "tolist") else x
 
+    view_point = None
+    if view_model is not None:
+        try:
+            view_point = view_model.predict(cropped_face, bbox_feat=bbox_feat).tolist()
+        except Exception as exc:
+            print(f"view_mtl inference failed: {exc}")
+
     return {
         "face_found": True,
         "face_bbox": [x1, y1, x2, y2],
+        "face_bbox_norm": bbox_feat,
         "gaze": to_list(gaze_output),
         "emotion_logits": to_list(emotion_logits),
         "au": to_list(au_output),
+        "view_point": view_point,
     }
 
 
