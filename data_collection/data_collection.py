@@ -49,7 +49,7 @@ os.makedirs(IMG_DIR, exist_ok=True)
 # Calibration points
 # ==============================
 
-def make_random_points(num_points=15, margin_ratio=0.02):
+def make_random_points(num_points=15, margin_ratio=0.01):
     """Sample random points across the screen with a margin from edges."""
     x_margin = int(SCREEN_W * margin_ratio)
     y_margin = int(SCREEN_H * margin_ratio)
@@ -58,7 +58,7 @@ def make_random_points(num_points=15, margin_ratio=0.02):
     return list(zip(xs.tolist(), ys.tolist()))
 
 # Random positions each run
-target_points = make_random_points(num_points=15, margin_ratio=0.12)
+target_points = make_random_points(num_points=15, margin_ratio=0.01)
 
 # ==============================
 # Helper drawing functions

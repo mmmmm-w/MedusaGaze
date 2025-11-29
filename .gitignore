@@ -3,4 +3,4 @@ __pycache__/
 data/
 .DS_Store
 experiments/
-viz_train_pred/
+eval_outputs/
