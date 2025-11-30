@@ -1,6 +1,7 @@
-weights/
-__pycache__/
-data/
 .DS_Store
+__pycache__/
+
+weights/
+data/
 experiments/
 eval_outputs/

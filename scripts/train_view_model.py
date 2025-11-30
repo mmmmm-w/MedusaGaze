@@ -141,8 +141,8 @@ def main() -> None:
         ]
     )
 
-    train_ds = ViewDataset(train_split, face_detector, transform, cache)
-    val_ds = ViewDataset(val_split, face_detector, transform, cache)
+    train_ds = ViewDataset(train_split, face_detector, transform, cache, use_disk_cache=True)
+    val_ds = ViewDataset(val_split, face_detector, transform, cache, use_disk_cache=True)
 
     train_loader = DataLoader(
         train_ds,
