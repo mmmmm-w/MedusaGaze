@@ -59,25 +59,27 @@ def make_random_points(num_points=15, margin_ratio=0.01):
 
 def make_margin_points(num_points=15, margin_ratio=0.12):
     """
-    Sample random points only in edge/corner bands.
-    margin_ratio controls band thickness (no extra inset).
+    Sample random points in edge stripes (top/bottom/left/right).
+    margin_ratio controls stripe thickness; stripes span full length/width.
     """
     x_band = max(1, int(SCREEN_W * margin_ratio))
     y_band = max(1, int(SCREEN_H * margin_ratio))
 
     points = []
     for _ in range(num_points):
-        side = np.random.choice(["left", "right"])
-        vert = np.random.choice(["top", "bottom"])
+        stripe = np.random.choice(["left", "right", "top", "bottom"])
 
-        if side == "left":
+        if stripe == "left":
             x = np.random.randint(0, x_band)
-        else:
+            y = np.random.randint(0, SCREEN_H)
+        elif stripe == "right":
             x = np.random.randint(max(0, SCREEN_W - x_band), SCREEN_W)
-
-        if vert == "top":
+            y = np.random.randint(0, SCREEN_H)
+        elif stripe == "top":
+            x = np.random.randint(0, SCREEN_W)
             y = np.random.randint(0, y_band)
-        else:
+        else:  # bottom
+            x = np.random.randint(0, SCREEN_W)
             y = np.random.randint(max(0, SCREEN_H - y_band), SCREEN_H)
 
         points.append((int(x), int(y)))
