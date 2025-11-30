@@ -42,6 +42,12 @@ For a position-aware CV2 demo (mirrored webcam, no browser), run:
 python scripts/interface_cv2.py
 ```
 
+For a fullscreen GUI with buttons (mirrored webcam inset, random red target, live predicted point), run:
+
+```sh
+python scripts/interface_gui.py
+```
+
 This repo is adapted from openface 3.0. OpenFace is a comprehensive toolkit for facial feature extraction, supporting face landmark detection, action unit detection, emotion recognition, and gaze estimation.
 
 ```

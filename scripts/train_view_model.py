@@ -98,6 +98,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", type=Path, default=Path("weights/view_mtl.pth"))
     parser.add_argument("--base-model", type=str, default="tf_efficientnet_b0_ns", help="Backbone name for View_MTL.")
+    parser.add_argument("--train-backbone", action="store_true", help="If set, finetune the entire model (backbone + heads).")
     return parser.parse_args()
 
 
@@ -160,7 +161,7 @@ def main() -> None:
 
     model = View_MTL(base_model_name=args.base_model, pretrained=False).to(device)
 
-    # Load backbone weights (pretrained) and freeze backbone params
+    # Load backbone weights (pretrained) and freeze backbone params unless train_backbone
     if args.backbone_weights and args.backbone_weights.exists():
         print(f"Loading backbone weights from {args.backbone_weights}")
         state = torch.load(args.backbone_weights, map_location=device)
@@ -169,8 +170,11 @@ def main() -> None:
     else:
         print("No backbone weights found; using randomly initialized backbone.")
 
-    for param in model.base_model.parameters():
-        param.requires_grad = False
+    if args.train_backbone:
+        print("Finetuning entire model (backbone + heads).")
+    else:
+        for param in model.base_model.parameters():
+            param.requires_grad = False
 
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad],
