@@ -2,6 +2,6 @@
 __pycache__/
 
 weights/
-data/
+/data/
 experiments/
 eval_outputs/
