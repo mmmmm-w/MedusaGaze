@@ -14,11 +14,12 @@ import argparse
 import csv
 import json
 import math
+import random
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "src") not in sys.path:
@@ -27,6 +28,8 @@ if str(ROOT / "src") not in sys.path:
 import cv2
 import numpy as np
 import torch
+import torch.nn as nn
+import torch.optim as optim
 import tkinter as tk
 from PIL import Image, ImageTk
 from torchvision import transforms
@@ -44,17 +47,22 @@ from view_data import compute_bbox_feat
 class CalibrationConfig:
     """Configuration for affine calibration"""
     NUM_POINTS = 9
-    MARGIN_RATIO = 0.1
+    MARGIN_RATIO = 0.05
     BASE_RADIUS = 15
     RADIUS_AMP = 10
     PULSE_FREQ = 1.5
-    MOVE_TIME = 0.5
-    CAPTURE_TIME = 0.8
+    MOVE_TIME = 0.8
+    CAPTURE_TIME = 1.0
     
     WEIGHTS_DIR = Path("demo/checkpoints")
     FACE_MODEL = Path("weights/Alignment_RetinaFace.pth")
     BASE_VIEW_MODEL = WEIGHTS_DIR / "view_mtl.pth"
     AFFINE_MATRIX_FILE = WEIGHTS_DIR / "affine_calibration.json"
+    FINETUNE_VIEW = True
+    FINETUNE_STEPS = 160
+    FINETUNE_LR = 5e-4
+    FINETUNE_BATCH = 16
+    FINETUNED_VIEW_FILE = WEIGHTS_DIR / "view_mtl_finetuned.pth"
 
 
 def get_screen_resolution() -> Tuple[int, int]:
@@ -112,12 +120,90 @@ def make_instruction_screen(screen_w: int, screen_h: int) -> np.ndarray:
     for line in instructions:
         draw_centered_text(img, line, y, scale=0.8, thickness=2)
         y += line_gap
-    
+
     return img
 
 
-def run_calibration(config: CalibrationConfig, force: bool = False) -> Optional[dict]:
-    """Run affine calibration if needed"""
+def finetune_view_head(
+    model: View_MTL,
+    samples: List[Dict],
+    device: torch.device,
+    steps: int,
+    lr: float,
+    batch_size: int,
+):
+    """Lightweight online finetuning on collected calibration samples."""
+    if not samples or steps <= 0:
+        return None
+
+    params = []
+    for name, param in model.named_parameters():
+        if name.startswith(("fc_view", "fc_pos", "view_regressor")):
+            param.requires_grad = True
+            params.append(param)
+        else:
+            param.requires_grad = False
+
+    optimizer = optim.Adam(params, lr=lr)
+    criterion = nn.MSELoss()
+    model.train()
+    model.base_model.eval()
+
+    for step in range(steps):
+        batch = random.sample(samples, min(batch_size, len(samples)))
+        faces = torch.stack([s["face"] for s in batch]).to(device)
+        bboxes = torch.stack([s["bbox"] for s in batch]).to(device)
+        targets = torch.stack([s["target"] for s in batch]).to(device)
+
+        optimizer.zero_grad()
+        preds = model(faces, bboxes)
+        loss = criterion(preds, targets)
+        loss.backward()
+        optimizer.step()
+
+        if (step + 1) % 50 == 0 or step == steps - 1:
+            print(f"  Finetune step {step+1}/{steps} - loss {loss.item():.5f}")
+
+    model.eval()
+    return loss.item()
+
+
+def aggregate_predictions(
+    model: View_MTL,
+    samples: List[Dict],
+    device: torch.device,
+    screen_w: int,
+    screen_h: int,
+    num_points: int,
+    points: List[Tuple[int, int]],
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Compute mean prediction per calibration point using current model."""
+    buckets: List[List[np.ndarray]] = [[] for _ in range(num_points)]
+    with torch.no_grad():
+        for s in samples:
+            face = s["face"].unsqueeze(0).to(device)
+            bbox = s["bbox"].unsqueeze(0).to(device)
+            pred = model(face, bbox).squeeze(0).cpu().numpy()
+            pred_px = pred * np.array([screen_w, screen_h])
+            buckets[s["point_idx"]].append(pred_px)
+
+    predicted_points = []
+    ground_truth_points = []
+    for idx, preds in enumerate(buckets):
+        if not preds:
+            continue
+        predicted_points.append(np.mean(preds, axis=0))
+        ground_truth_points.append(points[idx])
+
+    return np.array(predicted_points), np.array(ground_truth_points)
+
+
+def run_calibration(
+    config: CalibrationConfig,
+    force: bool = False,
+    finetune_view: Optional[bool] = None,
+) -> Optional[dict]:
+    """Run affine calibration (and optional view-head finetuning) if needed."""
     
     # Check if calibration already exists
     if config.AFFINE_MATRIX_FILE.exists() and not force:
@@ -182,14 +268,12 @@ def run_calibration(config: CalibrationConfig, force: bool = False) -> Optional[
     ])
     
     # Collect data
-    predicted_points = []
-    ground_truth_points = []
+    samples: List[Dict] = []
     
     print(f"Collecting {len(points)} calibration points...")
     
     for idx, (tx, ty) in enumerate(points, 1):
         point_start = time.time()
-        point_predictions = []
         
         while True:
             elapsed = time.time() - point_start
@@ -231,14 +315,16 @@ def run_calibration(config: CalibrationConfig, force: bool = False) -> Optional[
                     bbox_feat = [cx, cy, bw, bh]
                     
                     face_rgb = cv2.cvtColor(face, cv2.COLOR_BGR2RGB)
-                    face_tensor = transform(face_rgb).unsqueeze(0).to(device)
-                    bbox_tensor = torch.tensor(bbox_feat, dtype=torch.float32, device=device).view(1, -1)
-                    
-                    with torch.no_grad():
-                        pred = view_model(face_tensor, bbox_tensor)
-                        pred_np = pred.squeeze(0).cpu().numpy()
-                        pred_px = pred_np * [screen_w, screen_h]
-                        point_predictions.append(pred_px)
+                    target_norm = torch.tensor([tx / screen_w, ty / screen_h], dtype=torch.float32)
+
+                    samples.append(
+                        {
+                            "face": transform(face_rgb),
+                            "bbox": torch.tensor(bbox_feat, dtype=torch.float32),
+                            "target": target_norm,
+                            "point_idx": idx - 1,
+                        }
+                    )
             
             key = cv2.waitKey(1) & 0xFF
             if key == 27:
@@ -246,30 +332,57 @@ def run_calibration(config: CalibrationConfig, force: bool = False) -> Optional[
                 cv2.destroyAllWindows()
                 print("Calibration cancelled.")
                 return None
-        
-        if point_predictions:
-            avg_pred = np.mean(point_predictions, axis=0)
-            predicted_points.append(avg_pred)
-            ground_truth_points.append([tx, ty])
     
     cap.release()
     cv2.destroyAllWindows()
     
-    if len(predicted_points) < 4:
-        print(f"✗ Only {len(predicted_points)} valid points. Need at least 4.")
+    if not samples:
+        print("✗ No valid samples collected.")
+        return None
+    unique_points = {s["point_idx"] for s in samples}
+    if len(unique_points) < 4:
+        print(f"✗ Only {len(unique_points)} unique points. Need at least 4.")
         return None
     
-    print(f"✓ Collected {len(predicted_points)} points")
-    
-    # Compute affine transformation
-    predicted_points = np.array(predicted_points)
-    ground_truth_points = np.array(ground_truth_points)
-    
-    matrix, inliers = cv2.estimateAffinePartial2D(predicted_points, ground_truth_points)
+    # Baseline predictions
+    preds_before, gts = aggregate_predictions(
+        view_model, samples, device, screen_w, screen_h, len(points), points
+    )
+    if len(preds_before) < 4:
+        print(f"✗ Only {len(preds_before)} valid points after aggregation. Need at least 4.")
+        return None
+    errors_before = np.linalg.norm(preds_before - gts, axis=1)
+    mean_before = np.mean(errors_before)
+    print(f"✓ Collected samples from {len(unique_points)} points (raw mean error: {mean_before:.1f}px)")
+
+    # Optional finetuning of the view head to reduce non-linearity
+    finetune_enabled = config.FINETUNE_VIEW if finetune_view is None else finetune_view
+    finetune_loss = None
+    if finetune_enabled:
+        print("\nRunning online finetuning of the view head...")
+        finetune_loss = finetune_view_head(
+            view_model,
+            samples,
+            device,
+            steps=config.FINETUNE_STEPS,
+            lr=config.FINETUNE_LR,
+            batch_size=config.FINETUNE_BATCH,
+        )
+        if finetune_loss is None:
+            finetune_loss = 0.0
+    else:
+        print("\nSkipping view-head finetuning.")
+
+    preds_after, gts_after = aggregate_predictions(
+        view_model, samples, device, screen_w, screen_h, len(points), points
+    )
+
+    # Compute affine transformation on post-finetune predictions
+    matrix, inliers = cv2.estimateAffinePartial2D(preds_after, gts_after)
     if matrix is None:
         matrix, _, _, _ = np.linalg.lstsq(
-            np.c_[predicted_points, np.ones(len(predicted_points))],
-            ground_truth_points,
+            np.c_[preds_after, np.ones(len(preds_after))],
+            gts_after,
             rcond=None
         )
         matrix = matrix.T
@@ -281,29 +394,42 @@ def run_calibration(config: CalibrationConfig, force: bool = False) -> Optional[
         pts_h = np.c_[pts, np.ones(len(pts))]
         return (pts_h @ mat.T)[:, :2]
     
-    corrected = apply_transform(predicted_points, matrix_3x3)
-    errors_before = np.linalg.norm(predicted_points - ground_truth_points, axis=1)
-    errors_after = np.linalg.norm(corrected - ground_truth_points, axis=1)
+    corrected = apply_transform(preds_after, matrix_3x3)
+    errors_after_raw = np.linalg.norm(preds_after - gts_after, axis=1)
+    errors_after_affine = np.linalg.norm(corrected - gts_after, axis=1)
     
-    mean_before = np.mean(errors_before)
-    mean_after = np.mean(errors_after)
-    improvement = ((mean_before - mean_after) / mean_before) * 100
+    mean_after_raw = np.mean(errors_after_raw)
+    mean_after_affine = np.mean(errors_after_affine)
+    improvement_affine = ((mean_after_raw - mean_after_affine) / mean_after_raw) * 100 if mean_after_raw > 1e-6 else 0.0
     
     print(f"\nCalibration Results:")
-    print(f"  Before: {mean_before:.1f} px")
-    print(f"  After:  {mean_after:.1f} px")
-    print(f"  Improvement: {improvement:.1f}%")
+    print(f"  Raw before finetune: {mean_before:.1f} px")
+    if finetune_enabled:
+        print(f"  Raw after finetune:  {mean_after_raw:.1f} px (loss {finetune_loss:.5f})")
+    else:
+        print(f"  Raw (no finetune):  {mean_after_raw:.1f} px")
+    print(f"  After affine:       {mean_after_affine:.1f} px (improvement {improvement_affine:.1f}%)")
     
     # Save
+    finetuned_view_path = None
+    if finetune_enabled:
+        finetuned_view_path = config.FINETUNED_VIEW_FILE
+        finetuned_view_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(view_model.state_dict(), finetuned_view_path)
+        print(f"✓ Finetuned view head saved to: {finetuned_view_path}")
+
     calibration_data = {
         "timestamp": datetime.now().isoformat(),
         "matrix": matrix_3x3.tolist(),
         "screen_resolution": [screen_w, screen_h],
+        "finetuned_view_ckpt": str(finetuned_view_path) if finetuned_view_path else None,
         "metrics": {
-            "mean_error_before_px": float(mean_before),
-            "mean_error_after_px": float(mean_after),
-            "improvement_pct": float(improvement),
-            "num_points": len(predicted_points)
+            "raw_error_before_px": float(mean_before),
+            "raw_error_after_px": float(mean_after_raw),
+            "affine_error_after_px": float(mean_after_affine),
+            "affine_improvement_pct": float(improvement_affine),
+            "num_points": len(preds_after),
+            "finetune_loss": float(finetune_loss) if finetune_loss is not None else None,
         }
     }
     
@@ -333,6 +459,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gesture-cooldown", type=float, default=0.8)
     parser.add_argument("--force-calibrate", action="store_true", help="Force recalibration even if exists")
     parser.add_argument("--skip-calibration", action="store_true", help="Skip calibration check")
+    parser.add_argument("--no-finetune-view", action="store_true", help="Skip online finetuning of the view head")
+    parser.add_argument("--finetune-steps", type=int, default=CalibrationConfig.FINETUNE_STEPS, help="Steps for online finetuning")
+    parser.add_argument("--finetune-lr", type=float, default=CalibrationConfig.FINETUNE_LR, help="Learning rate for online finetuning")
     return parser.parse_args()
 
 
@@ -604,13 +733,35 @@ if __name__ == "__main__":
     # Check if calibration needed
     if not args.skip_calibration:
         config = CalibrationConfig()
+        config.BASE_VIEW_MODEL = args.view_ckpt
+        config.FACE_MODEL = args.face_ckpt
+        config.FINETUNE_VIEW = not args.no_finetune_view
+        config.FINETUNE_STEPS = args.finetune_steps
+        config.FINETUNE_LR = args.finetune_lr
+        config.FINETUNED_VIEW_FILE = config.BASE_VIEW_MODEL.with_name(config.BASE_VIEW_MODEL.stem + "_finetuned.pth")
+        config.AFFINE_MATRIX_FILE = args.calibration
         
         if not config.AFFINE_MATRIX_FILE.exists() or args.force_calibrate:
             print("\nCalibration needed...")
-            run_calibration(config, force=args.force_calibrate)
+            calib_data = run_calibration(
+                config,
+                force=args.force_calibrate,
+                finetune_view=config.FINETUNE_VIEW,
+            )
+            if calib_data and calib_data.get("finetuned_view_ckpt"):
+                args.view_ckpt = Path(calib_data["finetuned_view_ckpt"])
             print("\n" + "="*60)
         else:
             print(f"\n✓ Using existing calibration: {config.AFFINE_MATRIX_FILE}")
+            try:
+                with open(config.AFFINE_MATRIX_FILE, "r") as f:
+                    existing_calib = json.load(f)
+                ckpt_path = existing_calib.get("finetuned_view_ckpt")
+                if ckpt_path and Path(ckpt_path).exists():
+                    args.view_ckpt = Path(ckpt_path)
+                    print(f"✓ Using finetuned view head: {args.view_ckpt}")
+            except Exception as exc:
+                print(f"⚠ Could not read finetuned view path: {exc}")
     
     # Launch demo
     print("\nLaunching demo...")
