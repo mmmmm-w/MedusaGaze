@@ -22,6 +22,17 @@ To run demo, run
 bash scripts/demo.sh
 ```
 
+We also made a tiny interactive demo to show the capability of our model. To play with it, run:
+```sh
+bash scripts/demo_cursor.sh
+```
+In this demo, you will first go through a calibration process, then enter a game. The control logic is:
+
+- Open Mouth: Freeze/Unfreeze cursor
+- Raise Eyebrow: Left click, which will remove a ball at the cursor position
+- Frown: Right click, which will place a ball at the cursor position
+
+
 ### data collection
 To collect data for finetuning/calibration, run
 
@@ -37,16 +48,6 @@ bash scripts/train.sh
 ```
 
 The script loads the pretrained backbone weights, freezes the backbone, and only trains the `fc_view`/`fc_pos`/`view_regressor` heads. It detects faces once, caches crops + normalized box features `[cx, cy, w, h]`, and saves the best checkpoint to `weights/view_mtl.pth`. Adjust `--max-samples` for quick tests. If you want to finetune the whole model, uncomment --train-backbone.
-
-### interface
-To run web interface demo, first run
-
-```sh
-python scripts/server.py
-```
-Then open `index.html` with your browser. The live view shows:
-- A green arrow for gaze direction from the multitask model
-- A cyan dot for the predicted screen point from the trained `view_mtl` model (requires `weights/view_mtl.pth`)
 
 This repo is adapted from openface 3.0. OpenFace is a comprehensive toolkit for facial feature extraction, supporting face landmark detection, action unit detection, emotion recognition, and gaze estimation.
 

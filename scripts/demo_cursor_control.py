@@ -42,7 +42,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mtl-ckpt", type=Path, default=ROOT / "weights" / "MTL_backbone.pth")
     parser.add_argument("--face-ckpt", type=Path, default=ROOT / "weights" / "Alignment_RetinaFace.pth")
     parser.add_argument("--spring-k", type=float, default=10.0)
-    parser.add_argument("--spring-damping", type=float, default=3.0)
+    parser.add_argument("--spring-damping", type=float, default=4.0)
+    parser.add_argument(
+        "--max-speed",
+        type=float,
+        default=1.5,
+        help="Clamp smoothed cursor velocity (normalized units/sec) to reduce jitter.",
+    )
     parser.add_argument("--jaw-thresh", type=float, default=0.6)
     parser.add_argument("--brow-raise-thresh", type=float, default=0.6)
     parser.add_argument("--brow-lower-thresh", type=float, default=0.6)
@@ -76,6 +82,7 @@ class CursorDemo:
 
         self.k = args.spring_k
         self.damping = args.spring_damping
+        self.max_speed = args.max_speed
         self.jaw_thresh = args.jaw_thresh
         self.brow_raise_thresh = args.brow_raise_thresh
         self.brow_lower_thresh = args.brow_lower_thresh
@@ -228,6 +235,10 @@ class CursorDemo:
                 disp = p_target - self.smoothed_point
                 acc = self.k * disp - self.damping * v
                 v = v + acc * dt
+                if self.max_speed > 0:
+                    speed = np.linalg.norm(v)
+                    if speed > self.max_speed:
+                        v = v * (self.max_speed / speed)
                 self.smoothed_point = self.smoothed_point + v * dt
                 self.velocity = v
 

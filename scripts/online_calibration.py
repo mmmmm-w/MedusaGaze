@@ -59,7 +59,7 @@ class CalibrationConfig:
     BASE_VIEW_MODEL = WEIGHTS_DIR / "view_mtl.pth"
     AFFINE_MATRIX_FILE = WEIGHTS_DIR / "affine_calibration.json"
     FINETUNE_VIEW = True
-    FINETUNE_STEPS = 160
+    FINETUNE_STEPS = 100
     FINETUNE_LR = 5e-4
     FINETUNE_BATCH = 16
     FINETUNED_VIEW_FILE = WEIGHTS_DIR / "view_mtl_finetuned.pth"
